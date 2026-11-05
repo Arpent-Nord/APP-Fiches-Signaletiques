@@ -214,7 +214,7 @@ body.preview #pvbar{display:flex}
   </section>
 </div>
 </main>
-<footer class="app">Fiches signalétiques · v0.4 · Arpent-Nord construction · MECATECH Arpentage — fond de carte © contributeurs OpenStreetMap. Les photos et coordonnées ne quittent pas votre appareil (seules les tuiles de carte sont téléchargées).</footer>
+<footer class="app">Fiches signalétiques · v0.4.2 · Arpent-Nord construction · MECATECH Arpentage — fond de carte © contributeurs OpenStreetMap. Les photos et coordonnées ne quittent pas votre appareil (seules les tuiles de carte sont téléchargées).</footer>
 
 <!-- Éditeur d'un point -->
 <aside class="drawer" id="drw">
@@ -283,7 +283,7 @@ const TYPES={
   equerre:{lab:'Équerre',res:'primaire',col:'#1f5fd6',prisme:['','',''],rp:"Centre de la vis 5/8''",ra:'Poinçon sur la plaque'},
   connecteur:{lab:'Connecteur Leica',res:'primaire',col:'#d62020',prisme:['Prisme circulaire','0','-34.4'],rp:'Centre du prisme installé ou à installer',ra:'Centre du prisme installé ou à installer'},
   circulaire:{lab:'Prisme circulaire',res:'secondaire',col:'#7b3fbf',prisme:['Prisme circulaire','',''],rp:'Centre du prisme',ra:'Centre du prisme'},
-  bille:{lab:'Bille-prisme',res:'secondaire',col:'#c2185b',prisme:['Bille-prisme','',''],rp:'Centre de la bille',ra:'Centre de la bille'},
+  bille:{lab:'Ball prism',res:'secondaire',col:'#c2185b',prisme:['Ball prism','',''],rp:'Centre du prisme',ra:'Centre du prisme'},
   cible:{lab:'Cible',res:'secondaire',col:'#169c2e',prisme:['Cible','N/A','N/A'],rp:'Centre de la cible',ra:'Centre de la cible'},
   mini:{lab:'Mini-prisme',res:'secondaire',col:'#0a93b5',prisme:['Mini-prisme','',''],rp:'Centre du prisme',ra:'Centre du prisme'},
   autre:{lab:'Autre',res:'secondaire',col:'#555',prisme:['','',''],rp:'',ra:''}
@@ -584,7 +584,7 @@ const DEF_CONTRAT=JSON.parse(JSON.stringify(S.contrat));
 function projJSON(){const o=JSON.parse(JSON.stringify(S,(k,v)=>k=='mapCache'?undefined:v));o.enregistre=new Date().toISOString();return new Blob([JSON.stringify(o)],{type:'application/json'});}
 const jsonName=num=>`FICHES_${(num||'CONTRAT').toUpperCase().replace(/[^A-Z0-9-]/g,'_')}_RESEAU.json`;
 function loadProject(o){if(!o.points||!o.contrat)throw new Error('Ce fichier n\'est pas un projet de fiches.');
-  S={schema:o.schema||S.schema,contrat:Object.assign({},DEF_CONTRAT,o.contrat),points:o.points};S.points.forEach(p=>{p.mapCache=null;if(p.pointHaut===undefined){p.pointHaut=/toit|haut|roof/i.test(p.description||'');p.acces=p.acces||(/toit/i.test(p.description||'')?'Toiture':'');}});
+  S={schema:o.schema||S.schema,contrat:Object.assign({},DEF_CONTRAT,o.contrat),points:o.points};S.points.forEach(p=>{p.mapCache=null;if(p.prisme&&p.prisme.type=='Bille-prisme')p.prisme.type='Ball prism';if(p.refPlani=='Centre de la bille')p.refPlani='Centre du prisme';if(p.refAlti=='Centre de la bille')p.refAlti='Centre du prisme';if(p.pointHaut===undefined){p.pointHaut=/toit|haut|roof/i.test(p.description||'');p.acces=p.acces||(/toit/i.test(p.description||'')?'Toiture':'');}});
   sel.clear();S.points.forEach(p=>sel.add(p.id));cur=null;$('drw').classList.remove('open');contratToUI();renderTable();drawMap(true);dirty=false;}
 $('bOpen').onclick=()=>$('fOpen').click();
 $('fOpen').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{loadProject(JSON.parse(await f.text()));}catch(err){alertMsg(err.message);}e.target.value='';};
@@ -592,7 +592,21 @@ $('fOpen').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{loadPro
 /* ---------- Dossier du contrat (Chrome / Edge) ---------- */
 let DIR=null,FDIR=null;const STATIONS=['02_IMPLANTATION','01_STATIONS'];
 const FOLDER_TXT='02_IMPLANTATION\\01_STATIONS\\FICHES_SIGNALETIQUES';
-async function writeFile(dir,name,blob){const fh=await dir.getFileHandle(name,{create:true});const w=await fh.createWritable();await w.write(blob);await w.close();}
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+async function writeOnce(dir,name,blob){const fh=await dir.getFileHandle(name,{create:true});const w=await fh.createWritable({keepExistingData:false});
+  try{await w.write(blob);await w.close();}catch(e){try{await w.abort();}catch(_){ }throw e;}}
+/* Écriture robuste : un fichier existant modifié entre-temps (synchronisation OneDrive/SharePoint, aperçu ouvert)
+   provoque InvalidStateError. On réessaie avec un nouveau handle, puis on supprime l'ancien fichier et on le recrée. */
+async function writeFile(dir,name,blob){
+  for(let k=0;k<3;k++){
+    try{await writeOnce(dir,name,blob);return;}
+    catch(e){
+      if(e.name=='NoModificationAllowedError')throw new Error(`« ${name} » est ouvert dans une autre application (lecteur PDF, aperçu de l'Explorateur) : fermez-le puis relancez.`);
+      if(e.name!='InvalidStateError'&&e.name!='NotReadableError')throw e;
+      await wait(400*(k+1));
+      if(k==1){try{await dir.removeEntry(name);}catch(_){ }}
+    }}
+  await writeOnce(dir,name,blob);}
 async function exists(dir,name){try{await dir.getFileHandle(name);return true;}catch(e){return false;}}
 function updDir(){$('dirInfo').textContent=DIR?`📁 ${DIR.name}`:'Aucun dossier de contrat';$('dirInfo').className='pill dirpill '+(DIR?'sec':'');$('dirInfo').title=DIR?`${DIR.name}\\${FOLDER_TXT}`:'';}
 $('bDir').onclick=async()=>{
@@ -646,9 +660,11 @@ $('bPdf').onclick=async()=>{
     const pd=await FDIR.getDirectoryHandle('PDF',{create:true});
     const ex=[];for(const p of L)if(await exists(pd,pdfName(num,p)))ex.push(pdfName(num,p));
     if(ex.length){busy(false);if(!window.confirm(`${ex.length} fiche(s) existent déjà avec la même révision et seront remplacées :\n${ex.slice(0,8).join('\n')}${ex.length>8?'\n…':''}\n\nPour garder l'ancienne version, augmentez d'abord la révision du point. Continuer ?`))return;busy(true);}
-    for(const [i,p] of L.entries()){busyTxt(`PDF ${i+1} / ${L.length} — ${p.matricule}…`);await writeFile(pd,pdfName(num,p),await fichePDF(p));}
+    const fails=[];let nOk=0;
+    for(const [i,p] of L.entries()){busyTxt(`PDF ${i+1} / ${L.length} — ${p.matricule}…`);try{await writeFile(pd,pdfName(num,p),await fichePDF(p));nOk++;}catch(e){fails.push(`${pdfName(num,p)} : ${e.message}`);}}
     busyTxt('Enregistrement du projet…');const w=await saveProject();
-    showMsg('ok',`${L.length} PDF enregistré(s) dans ${DIR.name}\\${FOLDER_TXT}\\PDF`+(w?' et projet enregistré.':'.'));
+    showMsg(fails.length?'err':'ok',`${nOk} PDF enregistré(s) dans ${DIR.name}\\${FOLDER_TXT}\\PDF`+(w?' et projet enregistré.':'.')+(fails.length?` ${fails.length} non enregistré(s) : `+fails.join(' | '):''));
+    if(fails.length)alertMsg(`${fails.length} fiche(s) n'ont pas pu être enregistrées :\n`+fails.join('\n'));
   }catch(e){alertMsg('Génération interrompue : '+e.message);}
   finally{busy(false);}};
 
